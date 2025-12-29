@@ -704,6 +704,105 @@ impl Hash for Interval {
 // Python Bindings
 // =============================================================================
 
+/// Positive infinity - compares greater than everything except itself
+#[pyclass(name = "_PInf")]
+#[derive(Clone, Copy)]
+pub struct PInf;
+
+#[pymethods]
+impl PInf {
+    #[new]
+    fn new() -> Self {
+        PInf
+    }
+
+    fn __neg__(&self) -> NInf {
+        NInf
+    }
+
+    fn __lt__(&self, _other: &Bound<'_, PyAny>) -> bool {
+        false
+    }
+
+    fn __le__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other.is_instance_of::<PInf>()
+    }
+
+    fn __gt__(&self, other: &Bound<'_, PyAny>) -> bool {
+        !other.is_instance_of::<PInf>()
+    }
+
+    fn __ge__(&self, _other: &Bound<'_, PyAny>) -> bool {
+        true
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other.is_instance_of::<PInf>()
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "+inf"
+    }
+
+    fn __hash__(&self) -> u64 {
+        // Same hash as Python's float('inf')
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        f64::INFINITY.to_bits().hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+/// Negative infinity - compares less than everything except itself
+#[pyclass(name = "_NInf")]
+#[derive(Clone, Copy)]
+pub struct NInf;
+
+#[pymethods]
+impl NInf {
+    #[new]
+    fn new() -> Self {
+        NInf
+    }
+
+    fn __neg__(&self) -> PInf {
+        PInf
+    }
+
+    fn __lt__(&self, other: &Bound<'_, PyAny>) -> bool {
+        !other.is_instance_of::<NInf>()
+    }
+
+    fn __le__(&self, _other: &Bound<'_, PyAny>) -> bool {
+        true
+    }
+
+    fn __gt__(&self, _other: &Bound<'_, PyAny>) -> bool {
+        false
+    }
+
+    fn __ge__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other.is_instance_of::<NInf>()
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other.is_instance_of::<NInf>()
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "-inf"
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        f64::NEG_INFINITY.to_bits().hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 /// Python wrapper for BoundType enum
 #[pyclass(name = "RustBound")]
 #[derive(Clone, Copy)]
@@ -786,7 +885,15 @@ fn micros_to_datetime(py: Python<'_>, micros: i64) -> PyResult<Py<PyAny>> {
 }
 
 fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
-    // Check for our special infinity marker
+    // Check for our PInf/NInf types first
+    if obj.is_instance_of::<PInf>() {
+        return Ok(Value::PosInf);
+    }
+    if obj.is_instance_of::<NInf>() {
+        return Ok(Value::NegInf);
+    }
+
+    // Check for our special infinity string marker
     if let Ok(s) = obj.extract::<String>() {
         if s == "+inf" {
             return Ok(Value::PosInf);
@@ -819,7 +926,7 @@ fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::Float(i as f64));
     }
 
-    // Check for Python's portion.inf
+    // Check for Python's portion.inf (by repr)
     let repr = obj.repr()?.to_string();
     if repr.contains("+inf") {
         return Ok(Value::PosInf);
@@ -1285,8 +1392,12 @@ fn empty() -> PyInterval {
 /// Python module definition
 #[pymodule]
 fn portion_rust(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
+    // Classes
     m.add_class::<PyBound>()?;
     m.add_class::<PyInterval>()?;
+    m.add_class::<PInf>()?;
+    m.add_class::<NInf>()?;
+
     // rust_ prefixed functions
     m.add_function(wrap_pyfunction!(rust_open, m)?)?;
     m.add_function(wrap_pyfunction!(rust_closed, m)?)?;
@@ -1294,6 +1405,7 @@ fn portion_rust(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rust_closedopen, m)?)?;
     m.add_function(wrap_pyfunction!(rust_singleton, m)?)?;
     m.add_function(wrap_pyfunction!(rust_empty, m)?)?;
+
     // Non-prefixed aliases for portion API compatibility
     m.add_function(wrap_pyfunction!(open, m)?)?;
     m.add_function(wrap_pyfunction!(closed, m)?)?;
@@ -1301,6 +1413,12 @@ fn portion_rust(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(closedopen, m)?)?;
     m.add_function(wrap_pyfunction!(singleton, m)?)?;
     m.add_function(wrap_pyfunction!(empty, m)?)?;
+
+    // Module-level constants for portion API compatibility
+    m.add("inf", PInf)?;
+    m.add("CLOSED", PyBound { inner: BoundType::Closed })?;
+    m.add("OPEN", PyBound { inner: BoundType::Open })?;
+
     Ok(())
 }
 
