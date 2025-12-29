@@ -49,6 +49,34 @@ import portion as _portion
 from portion import to_string, from_string, from_data, iterate
 
 
+def _from_portion_interval(interval):
+    """Convert portion.Interval to RustInterval if needed."""
+    if isinstance(interval, _portion.Interval):
+        result = empty()
+        for atomic in interval:
+            lower = atomic.lower
+            upper = atomic.upper
+            left_closed = atomic.left == _portion.CLOSED
+            right_closed = atomic.right == _portion.CLOSED
+
+            # Handle infinity
+            if lower == -_portion.inf:
+                lower = -inf
+            if upper == _portion.inf:
+                upper = inf
+
+            if left_closed and right_closed:
+                result = result | closed(lower, upper)
+            elif left_closed:
+                result = result | closedopen(lower, upper)
+            elif right_closed:
+                result = result | openclosed(lower, upper)
+            else:
+                result = result | open(lower, upper)
+        return result
+    return interval
+
+
 def _to_portion_interval(interval):
     """Convert RustInterval to portion.Interval if needed."""
     if isinstance(interval, RustInterval):
@@ -113,8 +141,11 @@ def to_data(interval, *, conv=None, pinf=None, ninf=None):
     """
     Export interval to a list of 4-tuples (left, lower, upper, right).
 
-    Converts RustInterval to portion.Interval first, then uses portion's to_data.
+    Converts RustInterval/Interval to portion.Interval first, then uses portion's to_data.
     """
+    # Handle Interval wrapper class
+    if hasattr(interval, '_inner'):
+        interval = interval._inner
     portion_interval = _to_portion_interval(interval)
     return _portion.to_data(portion_interval, conv=conv, pinf=pinf, ninf=ninf)
 
@@ -141,8 +172,191 @@ class IntervalDict(_PortionIntervalDict):
         return super().__contains__(_to_portion_interval(key))
 
 
-# Re-export Interval as alias for RustInterval
-Interval = RustInterval
+# Create wrapper class that handles interoperability with portion.Interval
+class Interval:
+    """
+    Interval class that wraps RustInterval and handles interoperability
+    with portion.Interval for seamless mixing of both types.
+    """
+    __slots__ = ('_inner',)
+
+    def __init__(self, inner=None):
+        if inner is None:
+            self._inner = empty()
+        elif isinstance(inner, Interval):
+            self._inner = inner._inner
+        elif isinstance(inner, RustInterval):
+            self._inner = inner
+        elif isinstance(inner, _portion.Interval):
+            self._inner = _from_portion_interval(inner)
+        else:
+            raise TypeError(f"Cannot create Interval from {type(inner)}")
+
+    @classmethod
+    def _wrap(cls, rust_interval):
+        """Wrap a RustInterval without conversion."""
+        obj = object.__new__(cls)
+        obj._inner = rust_interval
+        return obj
+
+    def _convert_other(self, other):
+        """Convert other operand to RustInterval."""
+        if isinstance(other, Interval):
+            return other._inner
+        elif isinstance(other, RustInterval):
+            return other
+        elif isinstance(other, _portion.Interval):
+            return _from_portion_interval(other)
+        return other
+
+    # Delegate all operations to inner RustInterval
+    def __or__(self, other):
+        return Interval._wrap(self._inner | self._convert_other(other))
+
+    def __ror__(self, other):
+        return Interval._wrap(self._convert_other(other) | self._inner)
+
+    def __and__(self, other):
+        return Interval._wrap(self._inner & self._convert_other(other))
+
+    def __rand__(self, other):
+        return Interval._wrap(self._convert_other(other) & self._inner)
+
+    def __sub__(self, other):
+        return Interval._wrap(self._inner - self._convert_other(other))
+
+    def __rsub__(self, other):
+        return Interval._wrap(self._convert_other(other) - self._inner)
+
+    def __invert__(self):
+        return Interval._wrap(~self._inner)
+
+    def __contains__(self, item):
+        return item in self._inner
+
+    def __eq__(self, other):
+        return self._inner == self._convert_other(other)
+
+    def __ne__(self, other):
+        return self._inner != self._convert_other(other)
+
+    def __lt__(self, other):
+        return self._inner < self._convert_other(other)
+
+    def __le__(self, other):
+        return self._inner <= self._convert_other(other)
+
+    def __gt__(self, other):
+        return self._inner > self._convert_other(other)
+
+    def __ge__(self, other):
+        return self._inner >= self._convert_other(other)
+
+    def __hash__(self):
+        return hash(self._inner)
+
+    def __repr__(self):
+        return repr(self._inner)
+
+    def __str__(self):
+        return str(self._inner)
+
+    def __bool__(self):
+        return bool(self._inner)
+
+    def __iter__(self):
+        return iter(self._inner)
+
+    def __len__(self):
+        return len(self._inner)
+
+    # Delegate properties and methods
+    @property
+    def empty(self):
+        return self._inner.empty
+
+    @property
+    def atomic(self):
+        return self._inner.atomic
+
+    @property
+    def lower(self):
+        return self._inner.lower
+
+    @property
+    def upper(self):
+        return self._inner.upper
+
+    @property
+    def left(self):
+        return self._inner.left
+
+    @property
+    def right(self):
+        return self._inner.right
+
+    @property
+    def enclosure(self):
+        return Interval._wrap(self._inner.enclosure)
+
+    def union(self, other):
+        return self | other
+
+    def intersection(self, other):
+        return self & other
+
+    def difference(self, other):
+        return self - other
+
+    def complement(self):
+        return ~self
+
+    def contains(self, item):
+        return item in self
+
+    def overlaps(self, other):
+        return self._inner.overlaps(self._convert_other(other))
+
+    def adjacent(self, other):
+        return self._inner.adjacent(self._convert_other(other))
+
+
+# Keep raw Rust functions with _raw suffix for direct access
+_raw_open = open
+_raw_closed = closed
+_raw_openclosed = openclosed
+_raw_closedopen = closedopen
+_raw_singleton = singleton
+_raw_empty = empty
+
+
+# Override interval creation functions to return Interval wrapper class
+def open(lower, upper):
+    """Create an open interval (lower, upper)."""
+    return Interval._wrap(_raw_open(lower, upper))
+
+def closed(lower, upper):
+    """Create a closed interval [lower, upper]."""
+    return Interval._wrap(_raw_closed(lower, upper))
+
+def openclosed(lower, upper):
+    """Create a half-open interval (lower, upper]."""
+    return Interval._wrap(_raw_openclosed(lower, upper))
+
+def closedopen(lower, upper):
+    """Create a half-open interval [lower, upper)."""
+    return Interval._wrap(_raw_closedopen(lower, upper))
+
+def singleton(value):
+    """Create a singleton interval [value]."""
+    return Interval._wrap(_raw_singleton(value))
+
+def empty():
+    """Create an empty interval ()."""
+    return Interval._wrap(_raw_empty())
+
+
+# Re-export RustBound as Bound
 Bound = RustBound
 
 __all__ = [
@@ -154,13 +368,14 @@ __all__ = [
     "IntervalDict",
     "_PInf",
     "_NInf",
-    # Interval creation functions
+    # Interval creation functions (return Interval wrapper)
     "open",
     "closed",
     "openclosed",
     "closedopen",
     "singleton",
     "empty",
+    # Raw Rust functions (return RustInterval directly)
     "rust_open",
     "rust_closed",
     "rust_openclosed",
