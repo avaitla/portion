@@ -1189,6 +1189,94 @@ impl PyInterval {
         self.inner == other.inner
     }
 
+    fn __ne__(&self, other: &PyInterval) -> bool {
+        self.inner != other.inner
+    }
+
+    /// a < b: all values in a are strictly less than the minimum value of b
+    fn __lt__(&self, other: &PyInterval) -> bool {
+        if self.inner.is_empty() || other.inner.is_empty() {
+            return false;
+        }
+        // a < b if a.upper < b.lower (strictly)
+        let a_upper = &self.inner.intervals.last().unwrap().upper;
+        let a_right = self.inner.intervals.last().unwrap().right;
+        let b_lower = &other.inner.intervals.first().unwrap().lower;
+        let b_left = other.inner.intervals.first().unwrap().left;
+
+        match a_upper.cmp(b_lower) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => {
+                // Equal bounds: need both to be open for strict less than
+                a_right == BoundType::Open || b_left == BoundType::Open
+            }
+        }
+    }
+
+    /// a <= b: all values in a are less than or equal to the maximum value of b
+    fn __le__(&self, other: &PyInterval) -> bool {
+        if self.inner.is_empty() || other.inner.is_empty() {
+            return false;
+        }
+        // a <= b if a.upper <= b.upper
+        let a_upper = &self.inner.intervals.last().unwrap().upper;
+        let a_right = self.inner.intervals.last().unwrap().right;
+        let b_upper = &other.inner.intervals.last().unwrap().upper;
+        let b_right = other.inner.intervals.last().unwrap().right;
+
+        match a_upper.cmp(b_upper) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => {
+                // Equal bounds: a <= b if a is open or b is closed
+                a_right == BoundType::Open || b_right == BoundType::Closed
+            }
+        }
+    }
+
+    /// a > b: all values in a are strictly greater than the maximum value of b
+    fn __gt__(&self, other: &PyInterval) -> bool {
+        if self.inner.is_empty() || other.inner.is_empty() {
+            return false;
+        }
+        // a > b if a.lower > b.upper (strictly)
+        let a_lower = &self.inner.intervals.first().unwrap().lower;
+        let a_left = self.inner.intervals.first().unwrap().left;
+        let b_upper = &other.inner.intervals.last().unwrap().upper;
+        let b_right = other.inner.intervals.last().unwrap().right;
+
+        match a_lower.cmp(b_upper) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                // Equal bounds: need both to be open for strict greater than
+                a_left == BoundType::Open || b_right == BoundType::Open
+            }
+        }
+    }
+
+    /// a >= b: all values in a are greater than or equal to the minimum value of b
+    fn __ge__(&self, other: &PyInterval) -> bool {
+        if self.inner.is_empty() || other.inner.is_empty() {
+            return false;
+        }
+        // a >= b if a.lower >= b.lower
+        let a_lower = &self.inner.intervals.first().unwrap().lower;
+        let a_left = self.inner.intervals.first().unwrap().left;
+        let b_lower = &other.inner.intervals.first().unwrap().lower;
+        let b_left = other.inner.intervals.first().unwrap().left;
+
+        match a_lower.cmp(b_lower) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                // Equal bounds: a >= b if a is closed or b is open
+                a_left == BoundType::Closed || b_left == BoundType::Open
+            }
+        }
+    }
+
     fn __hash__(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         let mut hasher = DefaultHasher::new();
