@@ -298,11 +298,13 @@ impl Interval {
             }
         });
 
-        // Merge consecutive intervals
+        // Merge consecutive intervals - O(n) algorithm
+        // Use into_iter() to avoid O(n) remove(0) operation
         let mut merged: Vec<Atomic> = Vec::with_capacity(atomics.len());
-        let mut current = atomics.remove(0);
+        let mut iter = atomics.into_iter();
+        let mut current = iter.next().unwrap(); // Safe: we checked non-empty above
 
-        for next in atomics {
+        for next in iter {
             if current.mergeable(&next) {
                 current = current.merge(&next);
             } else {
