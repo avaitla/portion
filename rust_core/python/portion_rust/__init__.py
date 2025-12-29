@@ -111,7 +111,11 @@ def _from_portion_interval(interval):
 
 
 def _to_portion_interval(interval):
-    """Convert RustInterval to portion.Interval if needed."""
+    """Convert RustInterval/Interval to portion.Interval if needed."""
+    # Handle our Interval wrapper class - extract inner RustInterval
+    if hasattr(interval, '_inner'):
+        interval = interval._inner
+
     if isinstance(interval, RustInterval):
         result = _portion.empty()
         repr_str = repr(interval)
@@ -203,6 +207,32 @@ class IntervalDict(_PortionIntervalDict):
 
     def __contains__(self, key):
         return super().__contains__(_to_portion_interval(key))
+
+    def get(self, key, default=None):
+        return super().get(_to_portion_interval(key), default)
+
+    def pop(self, key, *args):
+        return super().pop(_to_portion_interval(key), *args)
+
+    def setdefault(self, key, default=None):
+        return super().setdefault(_to_portion_interval(key), default)
+
+    def update(self, other=None, **kwargs):
+        if other is not None:
+            if hasattr(other, 'items'):
+                other = {_to_portion_interval(k): v for k, v in other.items()}
+            else:
+                other = [(_to_portion_interval(k), v) for k, v in other]
+        super().update(other, **kwargs)
+
+    def combine(self, other, how):
+        if isinstance(other, IntervalDict):
+            # Convert our IntervalDict to portion's format for combine
+            portion_other = _PortionIntervalDict()
+            for k, v in other.items():
+                portion_other[k] = v  # k is already portion.Interval from items()
+            return super().combine(portion_other, how)
+        return super().combine(other, how)
 
 
 # Create wrapper class that handles interoperability with portion.Interval
