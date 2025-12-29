@@ -1251,17 +1251,56 @@ fn rust_empty() -> PyInterval {
     PyInterval::empty()
 }
 
+// Aliases without rust_ prefix for API compatibility with portion
+#[pyfunction]
+fn open(py: Python<'_>, lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    rust_open(py, lower, upper)
+}
+
+#[pyfunction]
+fn closed(py: Python<'_>, lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    rust_closed(py, lower, upper)
+}
+
+#[pyfunction]
+fn openclosed(py: Python<'_>, lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    rust_openclosed(py, lower, upper)
+}
+
+#[pyfunction]
+fn closedopen(py: Python<'_>, lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    rust_closedopen(py, lower, upper)
+}
+
+#[pyfunction]
+fn singleton(py: Python<'_>, value: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    rust_singleton(py, value)
+}
+
+#[pyfunction]
+fn empty() -> PyInterval {
+    rust_empty()
+}
+
 /// Python module definition
 #[pymodule]
 fn portion_rust(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<PyBound>()?;
     m.add_class::<PyInterval>()?;
+    // rust_ prefixed functions
     m.add_function(wrap_pyfunction!(rust_open, m)?)?;
     m.add_function(wrap_pyfunction!(rust_closed, m)?)?;
     m.add_function(wrap_pyfunction!(rust_openclosed, m)?)?;
     m.add_function(wrap_pyfunction!(rust_closedopen, m)?)?;
     m.add_function(wrap_pyfunction!(rust_singleton, m)?)?;
     m.add_function(wrap_pyfunction!(rust_empty, m)?)?;
+    // Non-prefixed aliases for portion API compatibility
+    m.add_function(wrap_pyfunction!(open, m)?)?;
+    m.add_function(wrap_pyfunction!(closed, m)?)?;
+    m.add_function(wrap_pyfunction!(openclosed, m)?)?;
+    m.add_function(wrap_pyfunction!(closedopen, m)?)?;
+    m.add_function(wrap_pyfunction!(singleton, m)?)?;
+    m.add_function(wrap_pyfunction!(empty, m)?)?;
     Ok(())
 }
 
