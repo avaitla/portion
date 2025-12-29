@@ -7,6 +7,7 @@ name = "portion-rust"
 version = "0.1.0"
 description = "High-performance Rust backend for the portion interval library"
 requires-python = ">=3.9"
+dependencies = ["portion"]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -20,4 +21,5 @@ classifiers = [
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "portion_rust"
+module-name = "portion_rust.portion_rust"
+python-source = "python"
