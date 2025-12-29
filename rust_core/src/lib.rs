@@ -756,11 +756,11 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     )))
 }
 
-fn value_to_py(py: Python<'_>, value: Value) -> PyObject {
+fn value_to_py(py: Python<'_>, value: Value) -> Py<PyAny> {
     match value {
-        Value::NegInf => f64::NEG_INFINITY.to_object(py),
-        Value::PosInf => f64::INFINITY.to_object(py),
-        Value::Finite(v) => v.to_object(py),
+        Value::NegInf => f64::NEG_INFINITY.into_pyobject(py).unwrap().into_any().unbind(),
+        Value::PosInf => f64::INFINITY.into_pyobject(py).unwrap().into_any().unbind(),
+        Value::Finite(v) => v.into_pyobject(py).unwrap().into_any().unbind(),
     }
 }
 
@@ -873,12 +873,12 @@ impl PyInterval {
     }
 
     #[getter]
-    fn lower(&self, py: Python<'_>) -> PyObject {
+    fn lower(&self, py: Python<'_>) -> Py<PyAny> {
         value_to_py(py, self.inner.lower())
     }
 
     #[getter]
-    fn upper(&self, py: Python<'_>) -> PyObject {
+    fn upper(&self, py: Python<'_>) -> Py<PyAny> {
         value_to_py(py, self.inner.upper())
     }
 

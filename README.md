@@ -60,13 +60,19 @@ You can install `portion` and its development environment using `pip install --g
 
 For workloads with many intervals, a high-performance Rust implementation is available that provides **10-1000x speedups** depending on the operation.
 
-**Requirements:** [Rust toolchain](https://rustup.rs/) and [maturin](https://github.com/PyO3/maturin)
+**Requirements:** [Rust toolchain](https://rustup.rs/)
 
+**With uv (recommended):**
 ```bash
-# Install maturin
-pip install maturin
+# Clone and install with uv (automatically builds the Rust extension)
+git clone https://github.com/AlexandreDecan/portion
+cd portion
+uv sync --all-packages
+```
 
-# Build and install the Rust extension
+**Manual installation:**
+```bash
+pip install maturin
 cd rust_core
 maturin build --release
 pip install target/wheels/*.whl

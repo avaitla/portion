@@ -31,6 +31,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 
+[project.optional-dependencies]
+rust = ["portion-rust"]
+
 [project.urls]
 homepage = "https://github.com/AlexandreDecan/portion"
 repository = "https://github.com/AlexandreDecan/portion"
@@ -41,6 +44,15 @@ funding = "https://github.com/sponsors/AlexandreDecan"
 
 [dependency-groups]
 dev = ["pytest>=8.4.2", "pytest-cov>=7.0.0", "ruff>=0.14.7"]
+
+[tool.uv]
+dev-dependencies = ["portion-rust"]
+
+[tool.uv.sources]
+portion-rust = { workspace = true }
+
+[tool.uv.workspace]
+members = ["rust_core"]
 
 [tool.ruff]
 extend-exclude = ["tests/"]
