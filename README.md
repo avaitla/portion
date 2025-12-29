@@ -31,6 +31,7 @@ In particular, it provides the following features:
 ## Table of contents
 
   * [Installation](#installation)
+      * [High-performance Rust backend (optional)](#high-performance-rust-backend-optional)
   * [Documentation & usage](#documentation--usage)
       * [Interval creation](#interval-creation)
       * [Interval bounds & attributes](#interval-bounds--attributes)
@@ -53,6 +54,51 @@ You can use `pip` to install it, as usual: `pip install portion`. This will inst
 Pre-releases are available from the *master* branch on [GitHub](https://github.com/AlexandreDecan/portion) and can be installed with `pip install git+https://github.com/AlexandreDecan/portion` (but don't trust pre-releases!).
 
 You can install `portion` and its development environment using `pip install --group dev` at the root of this repository. This automatically installs [pytest](https://docs.pytest.org/en/latest/) (for the test suites) and [ruff](https://docs.astral.sh/ruff/) (for code style).
+
+
+### High-performance Rust backend (optional)
+
+For workloads with many intervals, a high-performance Rust implementation is available that provides **10-1000x speedups** depending on the operation.
+
+**Requirements:** [Rust toolchain](https://rustup.rs/) and [maturin](https://github.com/PyO3/maturin)
+
+```bash
+# Install maturin
+pip install maturin
+
+# Build and install the Rust extension
+cd rust_core
+maturin build --release
+pip install target/wheels/*.whl
+```
+
+**Usage:**
+
+```python
+import portion_rust as PR
+
+# Create intervals (same API as portion, prefixed with rust_)
+interval = PR.rust_closed(0, 10) | PR.rust_closed(20, 30)
+
+# All standard operations work
+print(5 in interval)      # True
+print(15 in interval)     # False
+print(interval & PR.rust_closed(5, 25))  # Intersection
+print(~interval)          # Complement
+```
+
+**Performance comparison** (see `benchmark.py` for full results):
+
+| Operation | Speedup |
+|-----------|---------|
+| Interval creation (1000 intervals) | ~38x |
+| Intersection | ~1000x |
+| Complement | ~700x |
+| Difference | ~1000x |
+| Containment checks | ~15x |
+| Real-world mixed operations | ~50x |
+
+Note: The Rust implementation currently only supports numeric (float) values, not arbitrary comparable objects like the pure Python version.
 
 
 ## Documentation & usage
