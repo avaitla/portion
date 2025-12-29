@@ -49,13 +49,46 @@ import portion as _portion
 from portion import to_string, from_string, from_data, iterate
 
 
+def _extract_scalar_bound(value, use_upper=False):
+    """Extract a scalar value from a potential interval bound.
+
+    If the bound is itself an interval (which can happen when mixing libraries),
+    extract the appropriate scalar bound from it.
+    """
+    # If it's our Interval wrapper, get the inner RustInterval
+    if hasattr(value, '_inner'):
+        value = value._inner
+
+    # If it's a RustInterval, extract the appropriate bound
+    if isinstance(value, RustInterval):
+        return value.upper if use_upper else value.lower
+
+    # If it's a portion.Interval, extract the appropriate bound
+    if isinstance(value, _portion.Interval):
+        return value.upper if use_upper else value.lower
+
+    return value
+
+
 def _from_portion_interval(interval):
-    """Convert portion.Interval to RustInterval if needed."""
+    """Convert portion.Interval to RustInterval if needed.
+
+    Returns a RustInterval (not an Interval wrapper) for use in Rust operations.
+    """
+    # If already a RustInterval, return as-is
+    if isinstance(interval, RustInterval):
+        return interval
+
+    # If it's our Interval wrapper, extract the inner RustInterval
+    if hasattr(interval, '_inner'):
+        return interval._inner
+
     if isinstance(interval, _portion.Interval):
-        result = empty()
+        # Use rust_* functions which are the raw Rust functions (not the wrappers)
+        result = rust_empty()
         for atomic in interval:
-            lower = atomic.lower
-            upper = atomic.upper
+            lower = _extract_scalar_bound(atomic.lower, use_upper=False)
+            upper = _extract_scalar_bound(atomic.upper, use_upper=True)
             left_closed = atomic.left == _portion.CLOSED
             right_closed = atomic.right == _portion.CLOSED
 
@@ -66,13 +99,13 @@ def _from_portion_interval(interval):
                 upper = inf
 
             if left_closed and right_closed:
-                result = result | closed(lower, upper)
+                result = result | rust_closed(lower, upper)
             elif left_closed:
-                result = result | closedopen(lower, upper)
+                result = result | rust_closedopen(lower, upper)
             elif right_closed:
-                result = result | openclosed(lower, upper)
+                result = result | rust_openclosed(lower, upper)
             else:
-                result = result | open(lower, upper)
+                result = result | rust_open(lower, upper)
         return result
     return interval
 
