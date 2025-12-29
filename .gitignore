@@ -7,4 +7,5 @@
 
 # Rust build artifacts
 rust_core/target/
-rust_core/Cargo.lockrust_core/python/portion_rust/*.so
+rust_core/Cargo.lock
+rust_core/python/portion_rust/*.so
