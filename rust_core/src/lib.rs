@@ -2,6 +2,7 @@
 //!
 //! This module provides a Rust implementation of interval arithmetic operations
 //! that can be used as a drop-in replacement for the pure Python implementation.
+//! Supports both numeric (float) and datetime values with native performance.
 
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyTypeError};
@@ -26,11 +27,13 @@ impl BoundType {
     }
 }
 
-/// Represents a value that can be a finite number or infinity
+/// Represents a value that can be a finite number, datetime, or infinity
 #[derive(Debug, Clone, Copy)]
 pub enum Value {
     NegInf,
-    Finite(f64),
+    Float(f64),
+    /// DateTime stored as microseconds since Unix epoch for fast comparison
+    DateTime(i64),
     PosInf,
 }
 
@@ -39,6 +42,28 @@ impl Value {
     pub fn is_inf(&self) -> bool {
         matches!(self, Value::NegInf | Value::PosInf)
     }
+
+    #[inline]
+    pub fn is_datetime(&self) -> bool {
+        matches!(self, Value::DateTime(_))
+    }
+
+    #[inline]
+    pub fn is_float(&self) -> bool {
+        matches!(self, Value::Float(_))
+    }
+
+    /// Check if two values are of compatible types for comparison
+    #[inline]
+    pub fn compatible_with(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::NegInf, _) | (_, Value::NegInf) => true,
+            (Value::PosInf, _) | (_, Value::PosInf) => true,
+            (Value::Float(_), Value::Float(_)) => true,
+            (Value::DateTime(_), Value::DateTime(_)) => true,
+            _ => false,
+        }
+    }
 }
 
 impl PartialEq for Value {
@@ -46,7 +71,8 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::NegInf, Value::NegInf) => true,
             (Value::PosInf, Value::PosInf) => true,
-            (Value::Finite(a), Value::Finite(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::DateTime(a), Value::DateTime(b)) => a == b,
             _ => false,
         }
     }
@@ -63,13 +89,20 @@ impl PartialOrd for Value {
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
+            // Infinity comparisons
             (Value::NegInf, Value::NegInf) => Ordering::Equal,
             (Value::NegInf, _) => Ordering::Less,
             (_, Value::NegInf) => Ordering::Greater,
             (Value::PosInf, Value::PosInf) => Ordering::Equal,
             (Value::PosInf, _) => Ordering::Greater,
             (_, Value::PosInf) => Ordering::Less,
-            (Value::Finite(a), Value::Finite(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            // Same type comparisons
+            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (Value::DateTime(a), Value::DateTime(b)) => a.cmp(b),
+            // Mixed type comparisons - treat as incompatible (should be caught earlier)
+            // For safety, we'll compare based on discriminant order
+            (Value::Float(_), Value::DateTime(_)) => Ordering::Less,
+            (Value::DateTime(_), Value::Float(_)) => Ordering::Greater,
         }
     }
 }
@@ -77,9 +110,20 @@ impl Ord for Value {
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
-            Value::NegInf => (-1i64).hash(state),
-            Value::PosInf => 1i64.hash(state),
-            Value::Finite(v) => v.to_bits().hash(state),
+            Value::NegInf => {
+                0u8.hash(state);
+            }
+            Value::Float(v) => {
+                1u8.hash(state);
+                v.to_bits().hash(state);
+            }
+            Value::DateTime(v) => {
+                2u8.hash(state);
+                v.hash(state);
+            }
+            Value::PosInf => {
+                3u8.hash(state);
+            }
         }
     }
 }
@@ -719,7 +763,29 @@ impl PyBound {
     }
 }
 
-fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+/// Convert a Python datetime to microseconds since Unix epoch
+fn datetime_to_micros(_py: Python<'_>, dt: &Bound<'_, PyAny>) -> PyResult<i64> {
+    // Use datetime's timestamp() method which returns seconds as float
+    let timestamp: f64 = dt.call_method0("timestamp")?.extract()?;
+    Ok((timestamp * 1_000_000.0) as i64)
+}
+
+/// Convert microseconds since Unix epoch to a Python datetime
+fn micros_to_datetime(py: Python<'_>, micros: i64) -> PyResult<Py<PyAny>> {
+    let datetime_module = py.import("datetime")?;
+    let datetime_class = datetime_module.getattr("datetime")?;
+    let timezone = datetime_module.getattr("timezone")?;
+    let utc = timezone.getattr("utc")?;
+
+    // Convert micros to seconds (float)
+    let timestamp = (micros as f64) / 1_000_000.0;
+
+    // Create datetime from timestamp with UTC timezone
+    let dt = datetime_class.call_method1("fromtimestamp", (timestamp, utc))?;
+    Ok(dt.unbind())
+}
+
+fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     // Check for our special infinity marker
     if let Ok(s) = obj.extract::<String>() {
         if s == "+inf" {
@@ -729,17 +795,28 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         }
     }
 
+    // Check for datetime FIRST - before numeric types
+    // We check if the object has 'timestamp' method (duck typing for datetime-like objects)
+    // and also has year/month/day attributes to distinguish from other objects
+    if obj.hasattr("year").unwrap_or(false)
+        && obj.hasattr("month").unwrap_or(false)
+        && obj.hasattr("day").unwrap_or(false)
+        && obj.hasattr("timestamp").unwrap_or(false) {
+        let micros = datetime_to_micros(py, obj)?;
+        return Ok(Value::DateTime(micros));
+    }
+
     // Check for Python's math.inf
     if let Ok(f) = obj.extract::<f64>() {
         if f.is_infinite() {
             return Ok(if f > 0.0 { Value::PosInf } else { Value::NegInf });
         }
-        return Ok(Value::Finite(f));
+        return Ok(Value::Float(f));
     }
 
     // Check for int (which can be very large)
     if let Ok(i) = obj.extract::<i64>() {
-        return Ok(Value::Finite(i as f64));
+        return Ok(Value::Float(i as f64));
     }
 
     // Check for Python's portion.inf
@@ -751,16 +828,17 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     }
 
     Err(PyValueError::new_err(format!(
-        "Cannot convert {} to a numeric value",
+        "Cannot convert {} to a numeric or datetime value",
         repr
     )))
 }
 
-fn value_to_py(py: Python<'_>, value: Value) -> Py<PyAny> {
+fn value_to_py(py: Python<'_>, value: Value) -> PyResult<Py<PyAny>> {
     match value {
-        Value::NegInf => f64::NEG_INFINITY.into_pyobject(py).unwrap().into_any().unbind(),
-        Value::PosInf => f64::INFINITY.into_pyobject(py).unwrap().into_any().unbind(),
-        Value::Finite(v) => v.into_pyobject(py).unwrap().into_any().unbind(),
+        Value::NegInf => Ok(f64::NEG_INFINITY.into_pyobject(py).unwrap().into_any().unbind()),
+        Value::PosInf => Ok(f64::INFINITY.into_pyobject(py).unwrap().into_any().unbind()),
+        Value::Float(v) => Ok(v.into_pyobject(py).unwrap().into_any().unbind()),
+        Value::DateTime(micros) => micros_to_datetime(py, micros),
     }
 }
 
@@ -799,6 +877,72 @@ fn py_to_bound(obj: &Bound<'_, PyAny>) -> PyResult<BoundType> {
     )))
 }
 
+/// Format a Value for display
+fn format_value(value: &Value) -> String {
+    match value {
+        Value::NegInf => "-inf".to_string(),
+        Value::PosInf => "+inf".to_string(),
+        Value::Float(v) => format!("{}", v),
+        Value::DateTime(micros) => {
+            // Convert microseconds to a readable datetime format
+            let timestamp_secs = *micros / 1_000_000;
+            let micros_part = (*micros % 1_000_000).abs();
+            // Format as ISO-like: YYYY-MM-DD HH:MM:SS
+            // We compute the date/time components manually for efficiency
+            let secs_per_day = 86400i64;
+            let days_since_epoch = timestamp_secs / secs_per_day;
+            let time_of_day = (timestamp_secs % secs_per_day) as i32;
+
+            // Convert days since epoch to year/month/day
+            // Using a simple algorithm for dates after 1970
+            let mut days = days_since_epoch as i32;
+            let mut year = 1970;
+
+            loop {
+                let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                    366
+                } else {
+                    365
+                };
+                if days < days_in_year {
+                    break;
+                }
+                days -= days_in_year;
+                year += 1;
+            }
+
+            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+            let days_in_months = if leap {
+                [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+            } else {
+                [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+            };
+
+            let mut month = 0;
+            for (i, &d) in days_in_months.iter().enumerate() {
+                if days < d {
+                    month = i + 1;
+                    break;
+                }
+                days -= d;
+            }
+            let day = days + 1;
+
+            let hours = time_of_day / 3600;
+            let minutes = (time_of_day % 3600) / 60;
+            let seconds = time_of_day % 60;
+
+            if micros_part == 0 {
+                format!("dt({}-{:02}-{:02} {:02}:{:02}:{:02})",
+                    year, month, day, hours, minutes, seconds)
+            } else {
+                format!("dt({}-{:02}-{:02} {:02}:{:02}:{:02}.{:06})",
+                    year, month, day, hours, minutes, seconds, micros_part)
+            }
+        }
+    }
+}
+
 /// Python wrapper for Interval
 #[pyclass(name = "RustInterval")]
 #[derive(Clone)]
@@ -830,15 +974,23 @@ impl PyInterval {
 
     #[staticmethod]
     fn from_atomic(
+        py: Python<'_>,
         left: Bound<'_, PyAny>,
         lower: Bound<'_, PyAny>,
         upper: Bound<'_, PyAny>,
         right: Bound<'_, PyAny>,
     ) -> PyResult<Self> {
         let left_bound = py_to_bound(&left)?;
-        let lower_val = py_to_value(&lower)?;
-        let upper_val = py_to_value(&upper)?;
+        let lower_val = py_to_value(py, &lower)?;
+        let upper_val = py_to_value(py, &upper)?;
         let right_bound = py_to_bound(&right)?;
+
+        // Check type compatibility
+        if !lower_val.compatible_with(&upper_val) {
+            return Err(PyTypeError::new_err(
+                "Cannot mix float and datetime values in the same interval",
+            ));
+        }
 
         Ok(PyInterval {
             inner: Interval::from_atomic(left_bound, lower_val, upper_val, right_bound),
@@ -873,12 +1025,12 @@ impl PyInterval {
     }
 
     #[getter]
-    fn lower(&self, py: Python<'_>) -> Py<PyAny> {
+    fn lower(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         value_to_py(py, self.inner.lower())
     }
 
     #[getter]
-    fn upper(&self, py: Python<'_>) -> Py<PyAny> {
+    fn upper(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         value_to_py(py, self.inner.upper())
     }
 
@@ -917,11 +1069,11 @@ impl PyInterval {
         }
     }
 
-    fn __contains__(&self, item: Bound<'_, PyAny>) -> PyResult<bool> {
+    fn __contains__(&self, py: Python<'_>, item: Bound<'_, PyAny>) -> PyResult<bool> {
         if let Ok(interval) = item.extract::<PyInterval>() {
             Ok(self.inner.contains_interval(&interval.inner))
         } else {
-            let value = py_to_value(&item)?;
+            let value = py_to_value(py, &item)?;
             Ok(self.inner.contains_value(value))
         }
     }
@@ -948,11 +1100,11 @@ impl PyInterval {
             .iter()
             .map(|atomic| {
                 if atomic.lower == atomic.upper {
-                    format!("[{:?}]", atomic.lower)
+                    format!("[{}]", format_value(&atomic.lower))
                 } else {
                     let left = if atomic.left == BoundType::Closed { "[" } else { "(" };
                     let right = if atomic.right == BoundType::Closed { "]" } else { ")" };
-                    format!("{}{:?},{:?}{}", left, atomic.lower, atomic.upper, right)
+                    format!("{}{},{}{}", left, format_value(&atomic.lower), format_value(&atomic.upper), right)
                 }
             })
             .collect();
@@ -1007,8 +1159,8 @@ impl PyInterval {
         intersection.is_empty() && union.is_atomic()
     }
 
-    fn contains(&self, item: Bound<'_, PyAny>) -> PyResult<bool> {
-        self.__contains__(item)
+    fn contains(&self, py: Python<'_>, item: Bound<'_, PyAny>) -> PyResult<bool> {
+        self.__contains__(py, item)
     }
 }
 
@@ -1037,46 +1189,58 @@ impl PyIntervalIter {
     }
 }
 
-// Helper functions exposed to Python
+// Helper functions exposed to Python for float intervals
 #[pyfunction]
-fn rust_open(lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
-    let lower_val = py_to_value(&lower)?;
-    let upper_val = py_to_value(&upper)?;
+fn rust_open(py: Python<'_>, lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    let lower_val = py_to_value(py, &lower)?;
+    let upper_val = py_to_value(py, &upper)?;
+    if !lower_val.compatible_with(&upper_val) {
+        return Err(PyTypeError::new_err("Cannot mix float and datetime values"));
+    }
     Ok(PyInterval {
         inner: Interval::from_atomic(BoundType::Open, lower_val, upper_val, BoundType::Open),
     })
 }
 
 #[pyfunction]
-fn rust_closed(lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
-    let lower_val = py_to_value(&lower)?;
-    let upper_val = py_to_value(&upper)?;
+fn rust_closed(py: Python<'_>, lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    let lower_val = py_to_value(py, &lower)?;
+    let upper_val = py_to_value(py, &upper)?;
+    if !lower_val.compatible_with(&upper_val) {
+        return Err(PyTypeError::new_err("Cannot mix float and datetime values"));
+    }
     Ok(PyInterval {
         inner: Interval::from_atomic(BoundType::Closed, lower_val, upper_val, BoundType::Closed),
     })
 }
 
 #[pyfunction]
-fn rust_openclosed(lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
-    let lower_val = py_to_value(&lower)?;
-    let upper_val = py_to_value(&upper)?;
+fn rust_openclosed(py: Python<'_>, lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    let lower_val = py_to_value(py, &lower)?;
+    let upper_val = py_to_value(py, &upper)?;
+    if !lower_val.compatible_with(&upper_val) {
+        return Err(PyTypeError::new_err("Cannot mix float and datetime values"));
+    }
     Ok(PyInterval {
         inner: Interval::from_atomic(BoundType::Open, lower_val, upper_val, BoundType::Closed),
     })
 }
 
 #[pyfunction]
-fn rust_closedopen(lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
-    let lower_val = py_to_value(&lower)?;
-    let upper_val = py_to_value(&upper)?;
+fn rust_closedopen(py: Python<'_>, lower: Bound<'_, PyAny>, upper: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    let lower_val = py_to_value(py, &lower)?;
+    let upper_val = py_to_value(py, &upper)?;
+    if !lower_val.compatible_with(&upper_val) {
+        return Err(PyTypeError::new_err("Cannot mix float and datetime values"));
+    }
     Ok(PyInterval {
         inner: Interval::from_atomic(BoundType::Closed, lower_val, upper_val, BoundType::Open),
     })
 }
 
 #[pyfunction]
-fn rust_singleton(value: Bound<'_, PyAny>) -> PyResult<PyInterval> {
-    let val = py_to_value(&value)?;
+fn rust_singleton(py: Python<'_>, value: Bound<'_, PyAny>) -> PyResult<PyInterval> {
+    let val = py_to_value(py, &value)?;
     Ok(PyInterval {
         inner: Interval::from_atomic(BoundType::Closed, val, val, BoundType::Closed),
     })
@@ -1107,59 +1271,59 @@ mod tests {
 
     #[test]
     fn test_atomic_empty() {
-        let empty = Atomic::new(BoundType::Open, Value::Finite(1.0), Value::Finite(1.0), BoundType::Open);
+        let empty = Atomic::new(BoundType::Open, Value::Float(1.0), Value::Float(1.0), BoundType::Open);
         assert!(empty.is_empty());
 
-        let not_empty = Atomic::new(BoundType::Closed, Value::Finite(1.0), Value::Finite(1.0), BoundType::Closed);
+        let not_empty = Atomic::new(BoundType::Closed, Value::Float(1.0), Value::Float(1.0), BoundType::Closed);
         assert!(!not_empty.is_empty());
     }
 
     #[test]
     fn test_atomic_mergeable() {
-        let a = Atomic::new(BoundType::Closed, Value::Finite(0.0), Value::Finite(2.0), BoundType::Closed);
-        let b = Atomic::new(BoundType::Closed, Value::Finite(2.0), Value::Finite(4.0), BoundType::Closed);
+        let a = Atomic::new(BoundType::Closed, Value::Float(0.0), Value::Float(2.0), BoundType::Closed);
+        let b = Atomic::new(BoundType::Closed, Value::Float(2.0), Value::Float(4.0), BoundType::Closed);
         assert!(a.mergeable(&b));
 
-        let c = Atomic::new(BoundType::Closed, Value::Finite(0.0), Value::Finite(1.0), BoundType::Closed);
-        let d = Atomic::new(BoundType::Closed, Value::Finite(3.0), Value::Finite(4.0), BoundType::Closed);
+        let c = Atomic::new(BoundType::Closed, Value::Float(0.0), Value::Float(1.0), BoundType::Closed);
+        let d = Atomic::new(BoundType::Closed, Value::Float(3.0), Value::Float(4.0), BoundType::Closed);
         assert!(!c.mergeable(&d));
     }
 
     #[test]
     fn test_interval_union() {
-        let a = Interval::from_atomic(BoundType::Closed, Value::Finite(0.0), Value::Finite(2.0), BoundType::Closed);
-        let b = Interval::from_atomic(BoundType::Closed, Value::Finite(2.0), Value::Finite(4.0), BoundType::Closed);
+        let a = Interval::from_atomic(BoundType::Closed, Value::Float(0.0), Value::Float(2.0), BoundType::Closed);
+        let b = Interval::from_atomic(BoundType::Closed, Value::Float(2.0), Value::Float(4.0), BoundType::Closed);
         let union = a.union(&b);
         assert_eq!(union.len(), 1);
-        assert_eq!(union.lower(), Value::Finite(0.0));
-        assert_eq!(union.upper(), Value::Finite(4.0));
+        assert_eq!(union.lower(), Value::Float(0.0));
+        assert_eq!(union.upper(), Value::Float(4.0));
     }
 
     #[test]
     fn test_interval_intersection() {
-        let a = Interval::from_atomic(BoundType::Closed, Value::Finite(0.0), Value::Finite(3.0), BoundType::Closed);
-        let b = Interval::from_atomic(BoundType::Closed, Value::Finite(2.0), Value::Finite(5.0), BoundType::Closed);
+        let a = Interval::from_atomic(BoundType::Closed, Value::Float(0.0), Value::Float(3.0), BoundType::Closed);
+        let b = Interval::from_atomic(BoundType::Closed, Value::Float(2.0), Value::Float(5.0), BoundType::Closed);
         let intersection = a.intersection(&b);
         assert_eq!(intersection.len(), 1);
-        assert_eq!(intersection.lower(), Value::Finite(2.0));
-        assert_eq!(intersection.upper(), Value::Finite(3.0));
+        assert_eq!(intersection.lower(), Value::Float(2.0));
+        assert_eq!(intersection.upper(), Value::Float(3.0));
     }
 
     #[test]
     fn test_interval_complement() {
-        let a = Interval::from_atomic(BoundType::Closed, Value::Finite(0.0), Value::Finite(1.0), BoundType::Closed);
+        let a = Interval::from_atomic(BoundType::Closed, Value::Float(0.0), Value::Float(1.0), BoundType::Closed);
         let complement = a.complement();
         assert_eq!(complement.len(), 2);
     }
 
     #[test]
     fn test_interval_contains() {
-        let a = Interval::from_atomic(BoundType::Closed, Value::Finite(0.0), Value::Finite(10.0), BoundType::Closed);
-        assert!(a.contains_value(Value::Finite(5.0)));
-        assert!(a.contains_value(Value::Finite(0.0)));
-        assert!(a.contains_value(Value::Finite(10.0)));
-        assert!(!a.contains_value(Value::Finite(-1.0)));
-        assert!(!a.contains_value(Value::Finite(11.0)));
+        let a = Interval::from_atomic(BoundType::Closed, Value::Float(0.0), Value::Float(10.0), BoundType::Closed);
+        assert!(a.contains_value(Value::Float(5.0)));
+        assert!(a.contains_value(Value::Float(0.0)));
+        assert!(a.contains_value(Value::Float(10.0)));
+        assert!(!a.contains_value(Value::Float(-1.0)));
+        assert!(!a.contains_value(Value::Float(11.0)));
     }
 
     #[test]
@@ -1169,8 +1333,8 @@ mod tests {
             .map(|i| {
                 Atomic::new(
                     BoundType::Closed,
-                    Value::Finite(i as f64 * 10.0),
-                    Value::Finite(i as f64 * 10.0 + 5.0),
+                    Value::Float(i as f64 * 10.0),
+                    Value::Float(i as f64 * 10.0 + 5.0),
                     BoundType::Closed,
                 )
             })
@@ -1180,7 +1344,31 @@ mod tests {
         assert_eq!(interval.len(), 1000);
 
         // Test containment
-        assert!(interval.contains_value(Value::Finite(50.0)));
-        assert!(!interval.contains_value(Value::Finite(56.0)));
+        assert!(interval.contains_value(Value::Float(50.0)));
+        assert!(!interval.contains_value(Value::Float(56.0)));
+    }
+
+    #[test]
+    fn test_datetime_intervals() {
+        // Test datetime intervals using microseconds
+        let dt1 = Value::DateTime(1000000); // 1 second after epoch
+        let dt2 = Value::DateTime(2000000); // 2 seconds after epoch
+        let dt3 = Value::DateTime(1500000); // 1.5 seconds after epoch
+
+        let interval = Interval::from_atomic(BoundType::Closed, dt1, dt2, BoundType::Closed);
+        assert!(interval.contains_value(dt3));
+        assert!(interval.contains_value(dt1));
+        assert!(interval.contains_value(dt2));
+        assert!(!interval.contains_value(Value::DateTime(500000)));
+        assert!(!interval.contains_value(Value::DateTime(2500000)));
+    }
+
+    #[test]
+    fn test_value_compatibility() {
+        assert!(Value::Float(1.0).compatible_with(&Value::Float(2.0)));
+        assert!(Value::DateTime(1000).compatible_with(&Value::DateTime(2000)));
+        assert!(Value::NegInf.compatible_with(&Value::Float(1.0)));
+        assert!(Value::PosInf.compatible_with(&Value::DateTime(1000)));
+        assert!(!Value::Float(1.0).compatible_with(&Value::DateTime(1000)));
     }
 }

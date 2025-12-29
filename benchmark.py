@@ -9,6 +9,7 @@ of intervals to demonstrate the performance improvements from the Rust backend.
 import random
 import time
 import statistics
+from datetime import datetime, timezone, timedelta
 from typing import Callable
 import sys
 
@@ -74,6 +75,28 @@ def create_disjoint_intervals_rust(n: int):
     interval = PR.rust_empty()
     for i in range(n):
         interval = interval | PR.rust_closed(i * 20, i * 20 + 10)
+    return interval
+
+
+def create_datetime_intervals_python(n: int) -> P.Interval:
+    """Create n disjoint datetime intervals using Python portion."""
+    base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    intervals = P.empty()
+    for i in range(n):
+        start = base + timedelta(days=i * 10)
+        end = start + timedelta(days=5)
+        intervals = intervals | P.closed(start, end)
+    return intervals
+
+
+def create_datetime_intervals_rust(n: int):
+    """Create n disjoint datetime intervals using Rust portion_rust."""
+    base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    interval = PR.rust_empty()
+    for i in range(n):
+        start = base + timedelta(days=i * 10)
+        end = start + timedelta(days=5)
+        interval = interval | PR.rust_closed(start, end)
     return interval
 
 
@@ -325,6 +348,71 @@ def run_benchmarks():
             print_result(f"Mixed operations ({n} iterations)", py_mean, py_std, rust_mean, rust_std)
         else:
             print_result(f"Mixed operations ({n} iterations)", py_mean, py_std)
+
+    # Benchmark 9: Datetime interval operations
+    print_header("9. DATETIME INTERVALS (Creation and operations)")
+    for n in [100, 500, 1000]:
+        def py_datetime_create():
+            return create_datetime_intervals_python(n)
+
+        py_mean, py_std = benchmark(py_datetime_create, runs=3)
+
+        if RUST_AVAILABLE:
+            def rust_datetime_create():
+                return create_datetime_intervals_rust(n)
+
+            rust_mean, rust_std = benchmark(rust_datetime_create, runs=3)
+            print_result(f"Create {n} datetime intervals", py_mean, py_std, rust_mean, rust_std)
+        else:
+            print_result(f"Create {n} datetime intervals", py_mean, py_std)
+
+    # Datetime intersection
+    print_header("10. DATETIME INTERSECTION (Two datetime intervals)")
+    for n in [100, 500, 1000]:
+        py_a = create_datetime_intervals_python(n)
+        py_b = create_datetime_intervals_python(n)
+
+        def py_dt_intersection():
+            return py_a & py_b
+
+        py_mean, py_std = benchmark(py_dt_intersection, runs=5)
+
+        if RUST_AVAILABLE:
+            rust_a = create_datetime_intervals_rust(n)
+            rust_b = create_datetime_intervals_rust(n)
+
+            def rust_dt_intersection():
+                return rust_a & rust_b
+
+            rust_mean, rust_std = benchmark(rust_dt_intersection, runs=5)
+            print_result(f"Datetime intersection ({n} atomics)", py_mean, py_std, rust_mean, rust_std)
+        else:
+            print_result(f"Datetime intersection ({n} atomics)", py_mean, py_std)
+
+    # Datetime containment check
+    print_header("11. DATETIME CONTAINMENT (Value in datetime interval)")
+    for n in [100, 1000, 5000]:
+        base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        py_interval = create_datetime_intervals_python(n)
+        test_dates = [base + timedelta(days=random.randint(0, n * 10)) for _ in range(1000)]
+
+        def py_dt_contains():
+            for d in test_dates:
+                _ = d in py_interval
+
+        py_mean, py_std = benchmark(py_dt_contains, runs=5)
+
+        if RUST_AVAILABLE:
+            rust_interval = create_datetime_intervals_rust(n)
+
+            def rust_dt_contains():
+                for d in test_dates:
+                    _ = d in rust_interval
+
+            rust_mean, rust_std = benchmark(rust_dt_contains, runs=5)
+            print_result(f"1000 datetime contains ({n} atomics)", py_mean, py_std, rust_mean, rust_std)
+        else:
+            print_result(f"1000 datetime contains ({n} atomics)", py_mean, py_std)
 
     print("\n" + "=" * 70)
     print(" BENCHMARK COMPLETE")

@@ -78,7 +78,7 @@ maturin build --release
 pip install target/wheels/*.whl
 ```
 
-**Usage:**
+**Usage with numeric values:**
 
 ```python
 import portion_rust as PR
@@ -93,6 +93,38 @@ print(interval & PR.rust_closed(5, 25))  # Intersection
 print(~interval)          # Complement
 ```
 
+**Usage with datetime values:**
+
+The Rust backend also supports datetime intervals with high performance, storing datetimes internally as microseconds since epoch for fast comparisons:
+
+```python
+from datetime import datetime, timezone, timedelta
+import portion_rust as PR
+
+# Create datetime intervals
+start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+end = datetime(2024, 6, 30, tzinfo=timezone.utc)
+interval = PR.rust_closed(start, end)
+# Output: [dt(2024-01-01 00:00:00),dt(2024-06-30 00:00:00)]
+
+# Check containment
+mid_date = datetime(2024, 3, 15, tzinfo=timezone.utc)
+print(mid_date in interval)  # True
+
+# Union of datetime intervals
+q3_start = datetime(2024, 7, 1, tzinfo=timezone.utc)
+q3_end = datetime(2024, 9, 30, tzinfo=timezone.utc)
+q3 = PR.rust_closed(q3_start, q3_end)
+full_year = interval | q3
+# Output: [dt(2024-01-01 00:00:00),dt(2024-06-30 00:00:00)] | [dt(2024-07-01 00:00:00),dt(2024-09-30 00:00:00)]
+
+# Intersection, complement, and difference also work
+print(interval & PR.rust_closed(start, mid_date))  # Intersection
+print(~interval)  # Complement (with -inf and +inf)
+```
+
+**Note:** Float and datetime intervals cannot be mixed in the same operation - they are separate type systems for performance reasons.
+
 **Performance comparison** (see `benchmark.py` for full results):
 
 | Operation | Speedup |
@@ -103,8 +135,10 @@ print(~interval)          # Complement
 | Difference | ~1000x |
 | Containment checks | ~15x |
 | Real-world mixed operations | ~50x |
+| Datetime interval creation | ~5-15x |
+| Datetime containment checks | ~10-30x |
 
-Note: The Rust implementation currently only supports numeric (float) values, not arbitrary comparable objects like the pure Python version.
+Note: The Rust implementation supports numeric (float) and datetime values, but not arbitrary comparable objects like the pure Python version.
 
 
 ## Documentation & usage
